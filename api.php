@@ -1045,7 +1045,7 @@ namespace Psr\Http\Message {
          *     the second or subsequent call to the method.
          */
         public function moveTo($targetPath);
-        
+
         /**
          * Retrieve the file size.
          *
@@ -1056,7 +1056,7 @@ namespace Psr\Http\Message {
          * @return int|null The file size in bytes or null if unknown.
          */
         public function getSize();
-        
+
         /**
          * Retrieve the error associated with the uploaded file.
          *
@@ -1072,7 +1072,7 @@ namespace Psr\Http\Message {
          * @return int One of PHP's UPLOAD_ERR_XXX constants.
          */
         public function getError();
-        
+
         /**
          * Retrieve the filename sent by the client.
          *
@@ -1087,7 +1087,7 @@ namespace Psr\Http\Message {
          *     was provided.
          */
         public function getClientFilename();
-        
+
         /**
          * Retrieve the media type sent by the client.
          *
@@ -3350,7 +3350,7 @@ namespace Tqdev\PhpCrudApi\Cache\Base {
         {
             return true;
         }
-        
+
         public function ping(): int
         {
             $start = microtime(true);
@@ -5031,6 +5031,14 @@ namespace Tqdev\PhpCrudApi\Controller {
 
         public function __construct(Router $router, Responder $responder, RecordService $service)
         {
+            /* SHOPJEKTIV CUSTOM RAW SQL */
+            $router->register('POST', '/rawsql', array($this, 'rawsql'));
+            /* SHOPJEKTIV CUSTOM RAW SQL */
+
+            /* SHOPJEKTIV CUSTOM ORDER FUNCTIONS */
+            $router->register('POST', '/custom/*', array($this, 'custom'));
+            /* SHOPJEKTIV CUSTOM ORDER FUNCTIONS */
+
             $router->register('GET', '/records/*', array($this, '_list'));
             $router->register('POST', '/records/*', array($this, 'create'));
             $router->register('GET', '/records/*/*', array($this, 'read'));
@@ -5209,6 +5217,196 @@ namespace Tqdev\PhpCrudApi\Controller {
                 return $this->responder->success($this->service->increment($table, $id, $record, $params));
             }
         }
+
+
+
+        /* SHOPJEKTIV CUSTOM RAW SQL */
+        public function rawsql(ServerRequestInterface $request): ResponseInterface
+        {
+
+            $returnData = [
+                'success' => false,
+                'message' => 'test'
+            ];
+
+            $data = $request->getParsedBody();
+
+            $sql_query = $data->SQL;
+            $sql_bindings = explode(',', $data->BINDINGS);
+            $db = $this->service->rawsql($sql_query, $sql_bindings);
+
+            if ($db) {
+                $returnData = [
+                    'success' => true,
+                    'message' => $db->queryString
+                ];
+            }
+
+            return $this->responder->success($returnData);
+        }
+        /* SHOPJEKTIV CUSTOM RAW SQL END */
+
+        /* SHOPJEKTIV CUSTOM FUNCTIONS */
+        public function custom(ServerRequestInterface $request): ResponseInterface
+        {
+
+            require_once dirname(__FILE__) . "/bootstrap.php";
+            $oArticle = oxNew(\OxidEsales\Eshop\Application\Model\Article::class);
+            $oOrder = oxNew(\OxidEsales\Eshop\Application\Model\Order::class);
+            $oUser = oxNew(\OxidEsales\Eshop\Application\Model\User::class);
+            $oEmail = oxNew(\OxidEsales\Eshop\Core\Email::class);
+
+
+            $returnData = [
+                'success' => false,
+                'data' => 'something went wrong'
+            ];
+
+            $function = RequestUtils::getPathSegment($request, 2);
+            $data = $request->getParsedBody();
+
+            switch ($function) {
+                case 'setOrderAsSent':
+                    $orderId = $data->orderId;
+                    if ($oOrder->load($orderId)) {
+                        $oOrder->oxorder__oxsenddate = new \OxidEsales\Eshop\Core\Field(date("Y-m-d H:i:s", \OxidEsales\Eshop\Core\Registry::getUtilsDate()->getTime()));
+                        $orderSaved = $oOrder->save();
+
+                        $returnData = [
+                            'success' => ($orderSaved) ? true : false,
+                            'data' => ['orderId' => $orderSaved]
+                        ];
+
+                        if (isset($data->sendMail)) {
+                            $oOrder->getOrderArticles(true);
+                            $mailSent = $oEmail->sendSendedNowMail($oOrder);
+                            if ($mailSent) {
+                                $returnData['data']['mailSent'] = $mailSent;
+                            }
+                        }
+                    } else {
+                        $returnData = [
+                            'success' => false,
+                            'data' => 'order ID not found'
+                        ];
+                    }
+                    break;
+
+                case 'revertOrderSentDate':
+                    if ($oOrder->load($data->orderId)) {
+                        $oOrder->oxorder__oxsenddate = new \OxidEsales\Eshop\Core\Field("0000-00-00 00:00:00");
+                        $oOrder->save();
+
+                        $returnData = [
+                            'success' => true,
+                            'data' => $data->orderId
+                        ];
+                    } else {
+                        $returnData = [
+                            'success' => false,
+                            'data' => 'Order not found'
+                        ];
+                    }
+                    break;
+
+                case 'uploadProductImage':
+                    $sourceInfo = pathinfo($data->source);
+                    $fileName = $sourceInfo['basename'];
+
+                    $oConfig = \OxidEsales\Eshop\Core\Registry::getConfig();
+                    $oUtilsPic = \OxidEsales\Eshop\Core\Registry::getUtilsPic();
+                    $masterPictureDir = $oConfig->getMasterPictureDir(false);
+
+                    $destinationDir = $masterPictureDir . 'product/' . $data->index . '/';
+                    $destinationPath = $destinationDir . $fileName;
+
+                    $returnData = [
+                        'success' => true,
+                        'data' => [
+                            'source' => $data->source,
+                            'destination' => $destinationPath,
+                        ],
+                    ];
+
+                    $uploadImage = file_put_contents($destinationPath, file_get_contents($data->source));
+
+                    if (!$uploadImage) {
+                        $returnData = [
+                            'success' => false,
+                            'data' => "Cannot upload file from {$data->source} to {$destinationPath}"
+                        ];
+                    }
+
+                    //Create resized images
+                    $generatedProductImagesDir = $oConfig->getPictureDir(false) . 'generated/product/' . $data->index . '/';
+                    $dirs = scandir($generatedProductImagesDir);
+                    unset($dirs[0]);
+                    unset($dirs[1]);
+
+                    foreach($dirs as $dir) {
+                        $sizes = explode('_', $dir);
+                        $saveDestination = $generatedProductImagesDir . $dir. '/' . $fileName;
+                        $oUtilsPic->resizeImage($destinationPath, $saveDestination, $sizes[0], $sizes[1]);
+                    }
+
+                    break;
+
+                case 'deleteProductImage':
+                    $oConfig = \OxidEsales\Eshop\Core\Registry::getConfig();
+                    $masterPictureDir = $oConfig->getMasterPictureDir(false);
+
+                    $destinationDir = $masterPictureDir . 'product/' . $data->index . '/';
+                    $imagePath = $destinationDir . $data->image;
+
+                    if (!file_exists($imagePath)) {
+                        $returnData = [
+                            'success' => false,
+                            'data' => "File does not exists: {$imagePath}"
+                        ];
+                        return $this->responder->success($returnData);
+                    }
+
+                    $imageErased = unlink($imagePath);
+                    if (!$imageErased) {
+                        $returnData = [
+                            'success' => false,
+                            'data' => "We cannot delete file: {$imagePath}"
+                        ];
+                        return $this->responder->success($returnData);
+                    }
+
+                    //remove resized images
+                    $generatedProductImagesDir = $oConfig->getPictureDir(false) . 'generated/product/' . $data->index . '/';
+                    $dirs = scandir($generatedProductImagesDir);
+                    unset($dirs[0]);
+                    unset($dirs[1]);
+
+                    foreach($dirs as $dir) {
+                        $imagePath = $generatedProductImagesDir . $dir. '/' . $data->image;
+                        unlink($imagePath);
+                    }
+
+                    $returnData = [
+                        'success' => true,
+                        'data' => [
+                            'erased' => [],
+                        ]
+                    ];
+
+
+                    break;
+            }
+
+            return $this->responder->success($returnData);
+        }
+        /* SHOPJEKTIV CUSTOM CUSTOM FUNCTIONS END */
+
+
+
+
+
+
+
     }
 }
 
@@ -6172,6 +6370,20 @@ namespace Tqdev\PhpCrudApi\Database {
             $stmt->execute($parameters);
             return $stmt;
         }
+
+
+        /* SHOPJEKTIV CUSTOM RAW SQL */
+
+        public function rawsql(string $sql, array $parameters): \PDOStatement
+        {
+            $stmt = $this->pdo->prepare($sql);
+            //echo "- $sql -- " . json_encode($parameters, JSON_UNESCAPED_UNICODE) . "\n";
+            $stmt->execute($parameters);
+            return $stmt;
+        }
+
+        /* SHOPJEKTIV CUSTOM RAW SQL END */
+
 
         public function ping(): int
         {
@@ -8659,7 +8871,7 @@ namespace Tqdev\PhpCrudApi\Middleware {
             }
             return $value;
         }
-        
+
         private function convertJsonRequest($object, array $columnNames) /*: object */
         {
             if (is_array($object)) {
@@ -10119,7 +10331,7 @@ namespace Tqdev\PhpCrudApi\OpenApi {
                 $part = array_shift($parts);
                 if ($part === '') {
                     $part = count($current);
-                } 
+                }
                 if (!isset($current[$part])) {
                     $current[$part] = [];
                 }
@@ -11540,6 +11752,14 @@ namespace Tqdev\PhpCrudApi\Record {
             $this->joiner->addJoins($table, $records, $params, $this->db);
             return new ListDocument($records, $count);
         }
+
+        /* SHOPJEKTIV CUSTOM RAW SQL */
+        public function rawsql(string $sql, array $bindings)
+        {
+            $record = $this->db->rawsql($sql, $bindings);
+            return $record;
+        }
+        /* SHOPJEKTIV CUSTOM RAW SQL */
 
         public function ping(): int
         {
