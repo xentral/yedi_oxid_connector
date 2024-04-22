@@ -1,3 +1,6 @@
+> [!CAUTION] 
+> :bangbang: **_ARCHIVED!_** This repo has been archived and is no longer in use! :bangbang:
+
 # PHP-CRUD-API
 
 Single file PHP 7 script that adds a REST API to a MySQL 5.6 InnoDB database. PostgreSQL 9.1 and MS SQL Server 2012 are fully supported. 
